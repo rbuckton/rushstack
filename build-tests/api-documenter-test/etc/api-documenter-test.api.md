@@ -5,6 +5,36 @@
 ```ts
 
 // @public
+export class Collision {
+    // (undocumented)
+    z: number;
+}
+
+// @public
+export interface Collision {
+    // (undocumented)
+    a: number;
+}
+
+// @public
+export interface Collision {
+    // (undocumented)
+    b: number;
+}
+
+// @public
+export namespace Collision {
+    const // (undocumented)
+    x = 1;
+}
+
+// @public
+export namespace Collision {
+    const // (undocumented)
+    y = 1;
+}
+
+// @public
 export const constVariable: number;
 
 // @public

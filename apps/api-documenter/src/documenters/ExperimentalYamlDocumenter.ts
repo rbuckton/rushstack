@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
 // See LICENSE in the project root for license information.
 
-import { PackageName } from '@microsoft/node-core-library';
 import { DocComment, DocInlineTag } from '@microsoft/tsdoc';
 import { ApiModel, ApiItem, ApiItemKind, ApiDocumentedItem } from '@microsoft/api-extractor-model';
 
@@ -29,56 +28,15 @@ export class ExperimentalYamlDocumenter extends YamlDocumenter {
 
   /** @override */
   protected buildYamlTocFile(apiItems: ReadonlyArray<ApiItem>): IYamlTocFile {
-    this._buildTocItems2(apiItems);
+    this.buildTocItems(apiItems);
     return this._config.tocConfig;
   }
 
-  private _buildTocItems2(apiItems: ReadonlyArray<ApiItem>): IYamlTocItem[] {
-    const tocItems: IYamlTocItem[] = [];
-    for (const apiItem of apiItems) {
-      let tocItem: IYamlTocItem;
-
-      if (apiItem.kind === ApiItemKind.Namespace) {
-        // Namespaces don't have nodes yet
-        tocItem = {
-          name: apiItem.displayName
-        };
-      } else {
-        if (this._shouldEmbed(apiItem.kind)) {
-          // Don't generate table of contents items for embedded definitions
-          continue;
-        }
-
-        if (apiItem.kind === ApiItemKind.Package) {
-          tocItem = {
-            name: PackageName.getUnscopedName(apiItem.displayName),
-            uid: this._getUid(apiItem)
-          };
-        } else {
-          tocItem = {
-            name: apiItem.displayName,
-            uid: this._getUid(apiItem)
-          };
-          this._filterItem(apiItem, tocItem);
-        }
-      }
-
-      tocItems.push(tocItem);
-
-      let children: ReadonlyArray<ApiItem>;
-      if (apiItem.kind === ApiItemKind.Package) {
-        // Skip over the entry point, since it's not part of the documentation hierarchy
-        children = apiItem.members[0].members;
-      } else {
-        children = apiItem.members;
-      }
-
-      const childItems: IYamlTocItem[] = this._buildTocItems2(children);
-      if (childItems.length > 0) {
-        tocItem.items = childItems;
-      }
+  /** @override */
+  protected onCustomizeYamlTocItem(yamlTocItem: IYamlTocItem, apiItem: ApiItem): void {
+    if (apiItem.kind !== ApiItemKind.Package) {
+      this._filterItem(apiItem, yamlTocItem);
     }
-    return tocItems;
   }
 
   // Parses the tocConfig object to build a pointers map of nodes where we want to sort out the API items

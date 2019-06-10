@@ -11,6 +11,9 @@ items:
       - typeScript
     type: package
     children:
+      - api-documenter-test.Collision
+      - 'api-documenter-test.Collision:interface'
+      - 'api-documenter-test.Collision:namespace'
       - api-documenter-test.DocBaseClass
       - api-documenter-test.DocClass1
       - api-documenter-test.DocEnum
@@ -22,7 +25,8 @@ items:
       - api-documenter-test.IDocInterface4
       - api-documenter-test.IDocInterface5
       - api-documenter-test.IDocInterface6
-      - api-documenter-test.OuterNamespace.InnerNamespace.nestedFunction
+      - api-documenter-test.OuterNamespace
+      - api-documenter-test.OuterNamespace.InnerNamespace
       - api-documenter-test.SystemEvent
   - uid: api-documenter-test.globalFunction
     summary: An exported function
@@ -42,25 +46,13 @@ items:
           description: ''
           type:
             - number
-  - uid: api-documenter-test.OuterNamespace.InnerNamespace.nestedFunction
-    summary: A function inside a namespace
-    name: OuterNamespace.InnerNamespace.nestedFunction
-    fullName: OuterNamespace.InnerNamespace.nestedFunction
-    langs:
-      - typeScript
-    type: function
-    syntax:
-      content: 'function nestedFunction(x: number): number;'
-      return:
-        type:
-          - number
-        description: ''
-      parameters:
-        - id: x
-          description: ''
-          type:
-            - number
 references:
+  - uid: api-documenter-test.Collision
+    name: Collision
+  - uid: 'api-documenter-test.Collision:interface'
+    name: Collision
+  - uid: 'api-documenter-test.Collision:namespace'
+    name: Collision
   - uid: api-documenter-test.DocBaseClass
     name: DocBaseClass
   - uid: api-documenter-test.DocClass1
@@ -81,5 +73,9 @@ references:
     name: IDocInterface5
   - uid: api-documenter-test.IDocInterface6
     name: IDocInterface6
+  - uid: api-documenter-test.OuterNamespace
+    name: OuterNamespace
+  - uid: api-documenter-test.OuterNamespace.InnerNamespace
+    name: OuterNamespace.InnerNamespace
   - uid: api-documenter-test.SystemEvent
     name: SystemEvent

@@ -55,3 +55,43 @@ export namespace OuterNamespace {
    */
   export let nestedVariable: boolean = false;
 }
+
+/**
+ * A class that merges with other declarations
+ * @public
+ */
+export class Collision {
+  z: number;
+}
+
+/**
+ * An interface that merges with other declarations
+ * @public
+ */
+export interface Collision {
+  a: number;
+}
+
+/**
+ * An interface that merges with other declarations
+ * @public
+ */
+export interface Collision {
+  b: number;
+}
+
+/**
+ * A namespace that merges with other declarations
+ * @public
+ */
+export namespace Collision {
+  export const x = 1;
+}
+
+/**
+ * A namespace that merges with other declarations
+ * @public
+ */
+export namespace Collision {
+  export const y = 1;
+}

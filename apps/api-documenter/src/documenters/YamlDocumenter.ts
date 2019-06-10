@@ -64,6 +64,22 @@ interface IYamlReferenceData {
   anonymousTypeCounter: number;
 }
 
+interface IApiItemData {
+  uid: string;
+  possiblyAmbiguousTocDisplayName: string;
+  unambiguousTocDisplayName: string;
+  /**
+   * Stores the uids of any declarations with a colliding name.
+   */
+  collisions: ReadonlySet<string> | undefined;
+}
+
+const enum FilterChildrenFlags {
+  NonNamespace,
+  FlatNamespace,
+  All
+}
+
 /**
  * Writes documentation in the Universal Reference YAML file format, as defined by typescript.schema.json.
  */
@@ -77,7 +93,9 @@ export class YamlDocumenter {
   // then it is excluded from the mapping.  Also excluded are ApiItem objects (such as package
   // and function) which are not typically used as a data type.
   private _apiItemsByTypeName: Map<string, ApiItem>;
+  private _apiItemsByUid: Map<string, ApiItem>;
   private _knownTypeParameters: Set<string> | undefined;
+  private _apiItemData: ReadonlyMap<ApiItem, IApiItemData>;
   private _yamlReferenceData: IYamlReferenceData | undefined;
 
   private _outputFolder: string;
@@ -86,6 +104,8 @@ export class YamlDocumenter {
     this._apiModel = apiModel;
     this._markdownEmitter = new CustomMarkdownEmitter(this._apiModel);
     this._apiItemsByTypeName = new Map<string, ApiItem>();
+    this._apiItemsByUid = new Map<string, ApiItem>();
+    this._apiItemData = this._initApiItemData();
 
     this._initApiItemsByTypeName();
   }
@@ -154,14 +174,12 @@ export class YamlDocumenter {
         let children: ReadonlyArray<ApiItem>;
         if (apiItem.kind === ApiItemKind.Package) {
           // Skip over the entry point, since it's not part of the documentation hierarchy
-          children = apiItem.members[0].members;
+          children = this._filterChildren(apiItem.members[0].members, FilterChildrenFlags.All);
         } else {
-          children = apiItem.members;
+          children = this._filterChildren(apiItem.members, FilterChildrenFlags.NonNamespace);
         }
 
-        const flattenedChildren: ApiItem[] = this._flattenNamespaces(children);
-
-        for (const child of flattenedChildren) {
+        for (const child of children) {
           if (child instanceof ApiDocumentedItem) {
             if (this._visitApiItems(child, newYamlFile)) {
               if (!yamlItem.children) {
@@ -210,18 +228,29 @@ export class YamlDocumenter {
     }
   }
 
-  // Since the YAML schema does not yet support nested namespaces, we simply omit them from
-  // the tree.  However, _getYamlItemName() will show the namespace.
-  private _flattenNamespaces(items: ReadonlyArray<ApiItem>): ApiItem[] {
-    const flattened: ApiItem[] = [];
+  // The YAML Schema requires that namespaces be flattened, so we can pass one of three options:
+  // - FilterChildrenFlags.All: Returns all the non-namespace children and all of the nested namespaces
+  //   excluding their non-namespace children
+  // - FilterChildrenFlags.NonNamespace: Returns all the non-namespace children only.
+  // - FilterChildrenFlags.Namespace: Returns nested namespaces only (only used when _filterChildren
+  //   calls itself recursively as part of FilterChildrenFlags.All)
+  private _filterChildren(items: ReadonlyArray<ApiItem>, filter: FilterChildrenFlags): ApiItem[] {
+    const filtered: ApiItem[] = [];
     for (const item of items) {
       if (item.kind === ApiItemKind.Namespace) {
-        flattened.push(... this._flattenNamespaces(item.members));
+        if (filter === FilterChildrenFlags.FlatNamespace ||
+            filter === FilterChildrenFlags.All) {
+          filtered.push(item);
+          filtered.push(...this._filterChildren(item.members, FilterChildrenFlags.FlatNamespace));
+        }
       } else {
-        flattened.push(item);
+        if (filter === FilterChildrenFlags.NonNamespace ||
+            filter === FilterChildrenFlags.All) {
+          filtered.push(item);
+        }
       }
     }
-    return flattened;
+    return filtered;
   }
 
   /**
@@ -230,9 +259,43 @@ export class YamlDocumenter {
   private _writeTocFile(apiItems: ReadonlyArray<ApiItem>): void {
     const tocFile: IYamlTocFile = this.buildYamlTocFile(apiItems);
 
+    for (const tocItem of tocFile.items) {
+      this._disambiguateTocItem(tocItem, tocFile.items);
+    }
+
     const tocFilePath: string = path.join(this._outputFolder, 'toc.yml');
     console.log('Writing ' + tocFilePath);
     this._writeYamlFile(tocFile, tocFilePath, '', undefined);
+  }
+
+  private _disambiguateTocItem(tocItem: IYamlTocItem, siblings: IYamlTocItem[]): void {
+    // Disambiguate tocItem if it has a sibling with a colliding name
+    if (tocItem.uid && siblings.length > 1) {
+      const apiItem: ApiItem | undefined = this._apiItemsByUid.get(tocItem.uid);
+      const itemData: IApiItemData | undefined = apiItem && this._apiItemData.get(apiItem);
+      // Only disambiguate if the tocItem's name is still the ambiguous name.
+      if (itemData && tocItem.name === itemData.possiblyAmbiguousTocDisplayName) {
+        // Check whether any sibling's uid is in the list of collisions.
+        let hasCollision: boolean = false;
+        if (itemData.collisions) {
+          for (const sibling of siblings) {
+            if (sibling !== tocItem && sibling.uid && itemData.collisions.has(sibling.uid)) {
+              hasCollision = true;
+              break;
+            }
+          }
+        }
+        if (hasCollision) {
+          tocItem.name = itemData.unambiguousTocDisplayName;
+        }
+      }
+    }
+
+    if (tocItem.items) {
+      for (const childTocItem of tocItem.items) {
+        this._disambiguateTocItem(childTocItem, tocItem.items);
+      }
+    }
   }
 
   /** @virtual */
@@ -244,50 +307,44 @@ export class YamlDocumenter {
     const rootItem: IYamlTocItem = this.onGetTocRoot();
     tocFile.items.push(rootItem);
 
-    rootItem.items!.push(...this._buildTocItems(apiItems));
+    rootItem.items!.push(...this.buildTocItems(apiItems));
     return tocFile;
   }
 
-  private _buildTocItems(apiItems: ReadonlyArray<ApiItem>): IYamlTocItem[] {
+  /** @virtual */
+  protected onCustomizeYamlTocItem(yamlTocItem: IYamlTocItem, apiItem: ApiItem): void { // virtual
+    // (overridden by child class)
+  }
+
+  protected buildTocItems(apiItems: ReadonlyArray<ApiItem>): IYamlTocItem[] {
     const tocItems: IYamlTocItem[] = [];
     for (const apiItem of apiItems) {
       let tocItem: IYamlTocItem;
 
-      if (apiItem.kind === ApiItemKind.Namespace) {
-        // Namespaces don't have nodes yet
-        tocItem = {
-          name: apiItem.displayName
-        };
-      } else {
-        if (this._shouldEmbed(apiItem.kind)) {
-          // Don't generate table of contents items for embedded definitions
-          continue;
-        }
-
-        if (apiItem.kind === ApiItemKind.Package) {
-          tocItem = {
-            name: PackageName.getUnscopedName(apiItem.displayName),
-            uid: this._getUid(apiItem)
-          };
-        } else {
-          tocItem = {
-            name: apiItem.displayName,
-            uid: this._getUid(apiItem)
-          };
-        }
+      if (this._shouldEmbed(apiItem.kind)) {
+        // Don't generate table of contents items for embedded definitions
+        continue;
       }
 
+      // Create the item initially with the possibly ambiguous display name. We will disambiguate
+      // sibling toc items in a later pass in case a subclass generates a different TOC.
+      tocItem = {
+        name: this.getPossiblyAmbiguousTocDisplayName(apiItem),
+        uid: this._getUid(apiItem)
+      };
+
+      this.onCustomizeYamlTocItem(tocItem, apiItem);
       tocItems.push(tocItem);
 
       let children: ReadonlyArray<ApiItem>;
       if (apiItem.kind === ApiItemKind.Package) {
         // Skip over the entry point, since it's not part of the documentation hierarchy
-        children = apiItem.members[0].members;
+        children = this._filterChildren(apiItem.members[0].members, FilterChildrenFlags.All);
       } else {
-        children = apiItem.members;
+        children = this._filterChildren(apiItem.members, FilterChildrenFlags.NonNamespace);
       }
 
-      const childItems: IYamlTocItem[] = this._buildTocItems(children);
+      const childItems: IYamlTocItem[] = this.buildTocItems(children);
       if (childItems.length > 0) {
         tocItem.items = childItems;
       }
@@ -301,7 +358,8 @@ export class YamlDocumenter {
       case ApiItemKind.Package:
       case ApiItemKind.Interface:
       case ApiItemKind.Enum:
-      return false;
+      case ApiItemKind.Namespace:
+        return false;
     }
     return true;
   }
@@ -389,6 +447,9 @@ export class YamlDocumenter {
 
       case ApiItemKind.Package:
         yamlItem.type = 'package';
+        break;
+      case ApiItemKind.Namespace:
+        yamlItem.type = 'namespace';
         break;
       case ApiItemKind.Property:
       case ApiItemKind.PropertySignature:
@@ -595,6 +656,14 @@ export class YamlDocumenter {
    * Example:  node-core-library.JsonFile.load
    */
   protected _getUid(apiItem: ApiItem): string {
+    const apiItemData: IApiItemData | undefined = this._apiItemData.get(apiItem);
+    if (apiItemData) {
+      return apiItemData.uid;
+    }
+    return this._generateUid(apiItem);
+  }
+
+  private _generateUid(apiItem: ApiItem): string {
     let result: string = '';
     for (const hierarchyItem of apiItem.getHierarchy()) {
 
@@ -622,6 +691,91 @@ export class YamlDocumenter {
       }
     }
     return result;
+  }
+
+  /**
+   * Gets the unambiguous name of an item to display in a table of contents.
+   */
+  protected getUnambiguousTocDisplayName(apiItem: ApiItem): string {
+    const apiItemData: IApiItemData | undefined = this._apiItemData.get(apiItem);
+    if (apiItemData) {
+      return apiItemData.unambiguousTocDisplayName;
+    }
+    return this._generateTocDisplayName(apiItem);
+  }
+
+  /**
+   * Gets the name of an item to display in a table of contents.
+   */
+  protected getPossiblyAmbiguousTocDisplayName(apiItem: ApiItem): string {
+    const apiItemData: IApiItemData | undefined = this._apiItemData.get(apiItem);
+    if (apiItemData) {
+      return apiItemData.possiblyAmbiguousTocDisplayName;
+    }
+    return this._generateTocDisplayName(apiItem);
+  }
+
+  private _generateTocDisplayName(apiItem: ApiItem): string {
+    if (apiItem.kind === ApiItemKind.Package) {
+      return PackageName.getUnscopedName(apiItem.displayName);
+    }
+    if (apiItem.kind === ApiItemKind.Namespace) {
+      return apiItem.getScopedNameWithinPackage();
+    }
+    return apiItem.displayName;
+  }
+
+  private _initApiItemData(): ReadonlyMap<ApiItem, IApiItemData> {
+    const apiItemData: Map<ApiItem, Partial<IApiItemData>> = new Map<ApiItem, Partial<IApiItemData>>();
+    const uids: Map<string, Set<ApiItem>> = new Map<string, Set<ApiItem>>();
+    const scopedNames: Map<ApiItem, Map<string, Set<ApiItem>>> = new Map<ApiItem, Map<string, Set<ApiItem>>>();
+    const stack: ApiItem[] = [...this._apiModel.members];
+
+    while (stack.length) {
+      // Non-nullable assertion because we've already checked length.
+      const apiItem: ApiItem = stack.shift()!;
+      let localNames: Map<string, Set<ApiItem>> | undefined = scopedNames.get(apiItem.parent!);
+      if (!localNames) {
+        scopedNames.set(apiItem.parent!, localNames = new Map<string, Set<ApiItem>>());
+      }
+
+      const displayName: string = this._generateTocDisplayName(apiItem);
+      setApiItemData(apiItemData, apiItem, 'possiblyAmbiguousTocDisplayName', displayName);
+      multiMapAdd(localNames, displayName, apiItem);
+      multiMapAdd(uids, this._generateUid(apiItem), apiItem);
+
+      if (apiItem.kind === ApiItemKind.Package) {
+        stack.unshift(...apiItem.members[0].members);
+      } else {
+        stack.unshift(...apiItem.members);
+      }
+    }
+
+    disambiguate(uids, apiItemData, 'uid', disambiguateUid);
+
+    for (const localNames of scopedNames.values()) {
+      for (const apiItems of localNames.values()) {
+        if (apiItems.size > 1) {
+          const collisions: Set<string> = new Set<string>();
+          for (const apiItem of apiItems) {
+            // All ApiItems will be present in 'apiItemData' at this point.
+            // Every ApiItem will have a 'uid' at this point.
+            collisions.add(apiItemData.get(apiItem)!.uid!);
+          }
+          for (const apiItem of apiItems) {
+            setApiItemData(apiItemData, apiItem, 'collisions', collisions);
+          }
+        }
+      }
+
+      disambiguate(localNames, apiItemData, 'unambiguousTocDisplayName', disambiguateTocDisplayName);
+    }
+
+    for (const [apiItem, { uid }] of apiItemData) {
+      this._apiItemsByUid.set(uid!, apiItem);
+    }
+
+    return apiItemData as ReadonlyMap<ApiItem, IApiItemData>;
   }
 
   /**
@@ -924,4 +1078,147 @@ export class YamlDocumenter {
     console.log('Deleting old output from ' + this._outputFolder);
     FileSystem.ensureEmptyFolder(this._outputFolder);
   }
+}
+
+/**
+ * Add a key and a value to a map that supports multiple values.
+ */
+function multiMapAdd<K, V>(map: Map<K, Set<V>>, key: K, value: V): void {
+  let values: Set<V> | undefined = map.get(key);
+  if (!values) {
+    map.set(key, values = new Set<V>());
+  }
+  values.add(value);
+}
+
+/**
+ * Disambiguate values (either a uid or TOC entry) for ApiItems with possible collisions.
+ * @param map A map from a value to one or more ApiItems that have the same value.
+ * @param apiItemData A cache in which to store the unambiguous values
+ * @param key The kind of value to disambiguate.
+ * @param makeSuffix A callback used to generate a suffix for an ambiguous value.
+ */
+function disambiguate(map: Map<string, Set<ApiItem>>, apiItemData: Map<ApiItem, Partial<IApiItemData>>,
+  key: keyof IApiItemData, makeSuffix: (apiItem: ApiItem, precedence: number, attempt: number) => string): void {
+
+  // keep track of whether we've already seen a value so that we do not have duplicates.
+  const seen: Set<string> = new Set<string>();
+  for (const [possiblyAmbiguousValue, apiItems] of map) {
+    // Calculate the highest precedence among siblings
+    let precedence: number = -1;
+    if (apiItems.size > 1) {
+      for (const apiItem of apiItems) {
+        precedence = Math.max(precedence, getDisambiguationPrecedence(apiItem));
+      }
+    }
+
+    for (const apiItem of apiItems) {
+      let attempt: number = 0;
+      let unambiguousValue: string;
+      do {
+        unambiguousValue = possiblyAmbiguousValue + makeSuffix(apiItem, precedence, attempt++);
+      }
+      while (seen.has(unambiguousValue));
+      seen.add(unambiguousValue);
+
+      setApiItemData(apiItemData, apiItem, key, unambiguousValue);
+    }
+  }
+}
+
+function setApiItemData<K extends keyof IApiItemData>(apiItemData: Map<ApiItem, Partial<IApiItemData>>,
+  apiItem: ApiItem, key: K, value: IApiItemData[K]): void {
+
+  let data: Partial<IApiItemData> | undefined = apiItemData.get(apiItem);
+  if (!data) {
+    apiItemData.set(apiItem, data = {});
+  }
+  data[key] = value;
+}
+
+/**
+ * Gets the precedence of an ApiItem for use when performing disambiguation.
+ * The highest precedence item often avoids needing a suffix.
+ */
+function getDisambiguationPrecedence(apiItem: ApiItem): number {
+  switch (apiItem.kind) {
+    default:
+      // Anything else we will always disambiguate.
+      return 0;
+    case ApiItemKind.Namespace:
+      // Namespaces merge with everything.
+      return 1;
+    case ApiItemKind.Interface:
+    case ApiItemKind.TypeAlias:
+      // Interfaces and TypeAliases both exist in type-space and cannot collide with each other.
+      return 2;
+    case ApiItemKind.Class:
+    case ApiItemKind.Function:
+    case ApiItemKind.Enum:
+    case ApiItemKind.Variable:
+      // Classes, Functions, Enums, and Variables all exist in value-space and cannot collide with each other.
+      return 3;
+  }
+}
+
+/**
+ * Generates a suffix to disambiguate one uid from another. If `highestPrecedence` is -1, it means there was only
+ * one item.
+ *
+ * A suffix will *not* be added if the item has the highest precedence among its siblings. The precedence is:
+ * 1. Classes, Functions, Enums, Variables
+ * 2. Interfaces, TypeAliases
+ * 3. Namespaces
+ *
+ * If a class, an interface, and a namespace all have the same uid ('MyService'), it will generate the following:
+ * - ApiClass: 'MyService'
+ * - ApiInterface: 'MyService:interface'
+ * - ApiNamespace: 'MyService:namespace'
+ *
+ * If an interface and a namespace both have the same uid ('MyService'), it will generate the following:
+ * - ApiInterface: 'MyService'
+ * - ApiNamespace: 'MyService:namespace'
+ *
+ * If there is somehow *still* a collision, `attempt` will be non-zero and appended as a suffix:
+ * - 'ambiguousUid'
+ * - 'ambiguousUid_2'
+ * - 'ambiguousUid_3'
+ *
+ * However, it is unlikely that such a case will be hit.
+ */
+function disambiguateUid(item: ApiItem, highestPrecedence: number, attempt: number): string {
+  let suffix: string = '';
+  if (getDisambiguationPrecedence(item) < highestPrecedence) {
+    suffix += `:${item.kind.toLowerCase()}`;
+  }
+  if (attempt > 0) {
+    suffix += `_${attempt + 1}`;
+  }
+  return suffix;
+}
+
+/**
+ * Generates a suffix to disambiguate one TOC display name from another. If `highestPrecedence` is -1, it means there
+ * was only one item.
+ *
+ * For example, if an interface and a class both have the same display name, it will generate the following for each:
+ * - ApiClass: 'AmbiguousName (Class)'
+ * - ApiNamespace: 'AmbiguousName (Namespace)'
+ *
+ * If there is somehow *still* a collision, `attempt` will be non-zero and appended as a suffix:
+ * - 'AmbiguousName (Class)'
+ * - 'ambiguousName (Class) (2)'
+ * - 'ambiguousName (Class) (3)'
+ *
+ * However, it is unlikely that such a case will be hit.
+ */
+function disambiguateTocDisplayName(item: ApiItem, highestPrecedence: number, attempt: number): string {
+  let suffix: string = '';
+  if (highestPrecedence >= 0) {
+    suffix += ` (${item.kind})`;
+  }
+  if (attempt > 0) {
+    suffix += ` (${attempt + 1})`;
+  }
+  return suffix;
 }

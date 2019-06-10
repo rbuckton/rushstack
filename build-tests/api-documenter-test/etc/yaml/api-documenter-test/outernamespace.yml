@@ -1,0 +1,10 @@
+### YamlMime:UniversalReference
+items:
+  - uid: api-documenter-test.OuterNamespace
+    summary: A top-level namespace
+    name: OuterNamespace
+    fullName: OuterNamespace
+    langs:
+      - typeScript
+    type: namespace
+    package: api-documenter-test

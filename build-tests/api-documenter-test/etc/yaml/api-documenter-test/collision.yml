@@ -1,0 +1,10 @@
+### YamlMime:UniversalReference
+items:
+  - uid: 'api-documenter-test.Collision:namespace'
+    summary: A namespace that merges with other declarations
+    name: Collision
+    fullName: Collision
+    langs:
+      - typeScript
+    type: namespace
+    package: api-documenter-test
